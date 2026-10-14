@@ -1,0 +1,72 @@
+name: Windows installer release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+      - scripts/installer.cjs
+      - package.json
+      - package-lock.json
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clearleaf-windows-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run dist:win
+      - name: Verify packaged application
+        shell: pwsh
+        run: |
+          $env:CLEARLEAF_EXE = Join-Path $env:GITHUB_WORKSPACE 'release\win-unpacked\Clearleaf 澄页.exe'
+          node tests/startup.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged application failed startup validation' }
+      - name: Verify installation
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installer = Join-Path $env:GITHUB_WORKSPACE "release\Clearleaf-Setup-$version-x64.exe"
+          $target = Join-Path $env:RUNNER_TEMP 'clearleaf-install-test'
+          $process = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$target" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          $env:CLEARLEAF_EXE = Join-Path $target 'Clearleaf 澄页.exe'
+          node tests/startup.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed application failed startup validation' }
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = "v$version"
+          $installer = Join-Path $env:GITHUB_WORKSPACE "release\Clearleaf-Setup-$version-x64.exe"
+          $checksum = "$installer.sha256"
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($installer))" | Set-Content -LiteralPath $checksum -Encoding ascii
+          gh release view $tag --repo $env:GITHUB_REPOSITORY 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $installer $checksum --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
+            gh release edit $tag --latest --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $tag $installer $checksum --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --latest --title "澄页 v$version" --notes 'Windows x64 安装包。支持首次安装和覆盖升级，包含启动窗口唤回修复、拖入图书和翻页交互优化。'
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
