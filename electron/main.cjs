@@ -117,6 +117,12 @@ const registerAppProtocol = () => {
     }
   });
 };
+const showMainWindow = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+};
 const createWindow = () => {
   mainWindow = new BrowserWindow({
     width: 1320,
@@ -136,7 +142,7 @@ const createWindow = () => {
       webSecurity: true,
     },
   });
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', showMainWindow);
   mainWindow.on('maximize', () => mainWindow?.webContents.send('window:maximized', true));
   mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window:maximized', false));
   mainWindow.on('closed', () => {
@@ -172,6 +178,7 @@ const createWindow = () => {
   if (devServer) mainWindow.loadURL(devServer);
   else mainWindow.loadURL(`${APP_SCHEME}://app/index.html`);
   mainWindow.webContents.on('did-finish-load', () => {
+    showMainWindow();
     if (queuedOpenFiles.length) {
       mainWindow.webContents.send('books:open-requested', queuedOpenFiles);
       queuedOpenFiles = [];
@@ -353,7 +360,10 @@ const hasLock = app.requestSingleInstanceLock();
 if (!hasLock) {
   app.quit();
 } else {
-  app.on('second-instance', (_event, argv) => sendOpenFiles(filesFromArgv(argv)));
+  app.on('second-instance', (_event, argv) => {
+    showMainWindow();
+    sendOpenFiles(filesFromArgv(argv));
+  });
   app.whenReady().then(() => {
     registerAppProtocol();
     queuedOpenFiles.push(...filesFromArgv(process.argv.slice(1)));
